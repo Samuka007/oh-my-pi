@@ -481,25 +481,76 @@ function sanitizeMalformedToolCalls(messages: Message[], model: Model): Message[
 }
 
 /**
+ * Whether `target`'s encoder replays a thinking-only assistant turn natively:
+ * chat completions writes the thinking back under `compat` (`reasoning_content`
+ * field, Mistral thinking parts, or demoted text), so an interrupted
+ * thinking-only turn stays a legal, meaningful assistant message on the wire.
+ * Verified live against GLM-5.4 (`zhipu-coding-plan`): an assistant turn with
+ * `content: null` + `reasoning_content` is accepted and its chain is recalled
+ * by the model on the next turn.
+ */
+function targetReplaysThinkingOnlyAssistant(
+	target: Pick<Model, "api" | "reasoning" | "compat">,
+): boolean {
+	if (target.api !== "openai-completions") return false;
+	const compat = target.compat;
+	if (compat === undefined || !("thinkingFormat" in compat)) return false;
+	return completionsSendsOwnThinking(target, compat);
+}
+
+/**
  * Whether {@link transformMessages} drops `msg` from every replay: a turn cut
  * off by `length` / `error` / `aborted` that carries no text and no tool call.
+ *
+ * Targets whose encoder replays plaintext thinking natively (chat completions
+ * `reasoning_content` and friends) keep the turn instead when it carries a
+ * non-empty thinking block: the interrupted chain ships as `reasoning_content`,
+ * and dropping it would silently discard the model's own reasoning exactly when
+ * a user interrupt cut the thinking phase short (observed on GLM-5.4: the
+ * model could not see its own past CoT after Esc-interrupting mid-think).
+ * Turns with no thinking text still drop — an empty assistant turn has nothing
+ * to replay and only risks provider rejection.
+ *
+ * Without a `target`, the strict legacy predicate applies (callers that reason
+ * about replay in a target-agnostic way: retry/resume semantics, token
+ * billing for native reasoning payloads).
  */
-export function shouldDropTruncatedThinkingOnlyAssistant(msg: AssistantMessage): boolean {
+export function shouldDropTruncatedThinkingOnlyAssistant(
+	msg: AssistantMessage,
+	target?: Pick<Model, "api" | "reasoning" | "compat">,
+): boolean {
 	const isTruncatedStop = msg.stopReason === "length" || msg.stopReason === "error" || msg.stopReason === "aborted";
-	return isTruncatedStop && !msg.content.some(block => block.type === "toolCall" || block.type === "text");
+	if (!isTruncatedStop) return false;
+	if (msg.content.some(block => block.type === "toolCall" || block.type === "text")) return false;
+	if (target && targetReplaysThinkingOnlyAssistant(target)) {
+		return !msg.content.some(block => block.type === "thinking" && block.thinking.trim() !== "");
+	}
+	return true;
 }
 
 /**
  * Whether `msg` reaches a replay as an assistant turn, so it can be the latest
  * surviving one: {@link sanitizeMalformedToolCalls} drops its malformed tool
  * calls, then {@link shouldDropTruncatedThinkingOnlyAssistant} a truncated
- * turn left with no text and no tool call. On an already sanitized list this
- * is `!shouldDropTruncatedThinkingOnlyAssistant(msg)`. Pass the target `model`
- * to apply its tool-name limits; without one, any provider-declarable name survives.
+ * turn left with no text and no tool call — unless the target `model` replays
+ * the interrupted thinking natively (see the drop predicate). On an already
+ * sanitized list this is `!shouldDropTruncatedThinkingOnlyAssistant(msg)`.
+ * Pass the target `model` to apply its tool-name limits and thinking-replay
+ * policy; without one, any provider-declarable name survives and truncated
+ * thinking-only turns never do.
  */
 export function isSurvivingAssistant(msg: AssistantMessage, model?: Model): boolean {
 	const isTruncatedStop = msg.stopReason === "length" || msg.stopReason === "error" || msg.stopReason === "aborted";
 	if (msg.content.length === 0) return !isTruncatedStop;
+	const hasActionableBlock = msg.content.some(block => block.type === "toolCall" || block.type === "text");
+	if (
+		isTruncatedStop &&
+		!hasActionableBlock &&
+		model !== undefined &&
+		!shouldDropTruncatedThinkingOnlyAssistant(msg, model)
+	) {
+		return true;
+	}
 	const { allowedName, maxLength } = toolCallNameLimits(model);
 	return msg.content.some(block =>
 		block.type === "toolCall"
@@ -1499,7 +1550,14 @@ export function transformMessages<TApi extends Api>(
 			// represent reasoning-only assistant turns used for replay round-trips
 			// (OpenAI completions `reasoning_text`, Google signed thought parts).
 			const originalMsg = messages[i]!;
-			if (originalMsg.role === "assistant" && shouldDropTruncatedThinkingOnlyAssistant(originalMsg)) {
+			if (
+				originalMsg.role === "assistant" &&
+				shouldDropTruncatedThinkingOnlyAssistant(originalMsg, {
+					api: model.api,
+					reasoning: model.reasoning,
+					compat: targetCompat,
+				})
+			) {
 				continue;
 			}
 

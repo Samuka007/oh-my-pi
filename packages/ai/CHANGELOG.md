@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Interrupting a reasoning model mid-thinking no longer erases the partial CoT from the conversation: a thinking-only turn cut off by `length` / `error` / an abort now replays to chat-completions reasoning hosts that take thinking natively (GLM/Zhipu and other `zai`-format endpoints, DeepSeek, local `reasoning_content` servers) as `reasoning_content`, instead of being dropped from every replay; Anthropic-format targets keep the stricter drop
 - DeepSeek tool calls written as DSML text on OpenRouter's Responses route (and other Responses hosts) are now turned into real tool calls while streaming, as on the chat-completions route, instead of failing and triggering a retry nudge
 - Kimi K2 and Qwen tool calls written as text on OpenRouter's Responses route (and other Responses hosts) are now turned into real tool calls while streaming, as on the chat-completions route
 - GitHub Copilot Gemini models no longer fail every request with `400 invalid request body` when an MCP tool schema declares a `type` array (e.g. `["string", "null"]`); tool schemas are rewritten into Gemini's schema dialect ([#20198](https://github.com/can1357/oh-my-pi/issues/20198))
