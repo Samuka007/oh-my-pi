@@ -57,6 +57,7 @@ import {
 import { convertMessageToLlm } from "@oh-my-pi/pi-agent-core/compaction/messages";
 import type { AssistantMessage, ImageContent, Message, TextContent, UserMessage } from "@oh-my-pi/pi-ai";
 import { copyPerCallContextMessage } from "@oh-my-pi/pi-ai/utils/block-symbols";
+import { isReasoningSourceSignature } from "@oh-my-pi/pi-ai/utils/reasoning-source";
 import { isRecord, logger, prompt } from "@oh-my-pi/pi-utils";
 import { COLLAB_PROMPT_MESSAGE_TYPE } from "@oh-my-pi/pi-wire";
 import userInterjectionTemplate from "../prompts/steering/user-interjection.md" with { type: "text" };
@@ -487,10 +488,12 @@ export interface DemotedInterruptedThinking {
  * message — reasoning that was still streaming when the user aborted.
  *
  * A block joins the run only when it is a non-empty `thinking` block with no
- * `thinkingSignature`. A signed/complete thinking block (Anthropic signature,
- * OpenAI reasoning item id) is safely replayable, so it ends the run and stays
- * in place — as do `redactedThinking` encrypted blobs, text, tool calls,
- * empty-thinking blocks, and trailing empty text placeholders.
+ * *signing* `thinkingSignature`. A source marker (`"reasoning_content"`,
+ * `"mistral-content-parts"`) is replay state, not a signature, so GLM/Zhipu
+ * blocks still join the run. A signed/complete thinking block (Anthropic
+ * signature, OpenAI reasoning item id) is safely replayable, so it ends the
+ * run and stays in place — as do `redactedThinking` encrypted blobs, text,
+ * tool calls, empty-thinking blocks, and trailing empty text placeholders.
  */
 export function demoteInterruptedThinking(
 	message: Pick<AssistantMessage, "content">,
@@ -508,7 +511,19 @@ export function demoteInterruptedThinking(
 	let runStart = scanEnd;
 	while (runStart > 0) {
 		const block = content[runStart - 1]!;
-		if (block.type !== "thinking" || block.thinking.trim().length === 0 || block.thinkingSignature) {
+		if (block.type !== "thinking" || block.thinking.trim().length === 0) {
+			break;
+		}
+		// A source marker (`"reasoning_content"`, `"mistral-content-parts"`) records
+		// which wire field the text arrived on — replay state, not provider
+		// verification. GLM/Zhipu stamps it on every streamed reasoning block, so
+		// treating it like a signing signature would end the run before the
+		// interrupted chain ever demotes: no continuity note is written, and the
+		// provider-context builder then drops the aborted turn whole — the model
+		// loses its own interrupted CoT on the very next prompt (observed live on
+		// GLM-5.4). Opaque signatures (Anthropic, Responses envelopes, Gemini
+		// thought signatures) still mark a complete, natively-replayable block.
+		if (block.thinkingSignature && !isReasoningSourceSignature(block.thinkingSignature)) {
 			break;
 		}
 		runStart--;

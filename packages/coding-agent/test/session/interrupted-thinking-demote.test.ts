@@ -91,4 +91,42 @@ describe("demoteInterruptedThinking", () => {
 			blockCount: 1,
 		});
 	});
+
+	it("demotes GLM field-marker thinking the same as unsigned reasoning", () => {
+		// GLM/Zhipu stamps every streamed reasoning block with the wire-field name
+		// instead of a provider signature. The block is replay state, not verified
+		// reasoning, so an interrupted run must demote it: without this the
+		// continuity note is skipped and the provider-context builder drops the
+		// aborted turn whole, erasing the model's own CoT.
+		expect(
+			demoteContent([
+				{ type: "thinking", thinking: "Earlier GLM reasoning", thinkingSignature: "reasoning_content" },
+				{ type: "thinking", thinking: "Interrupted tail", thinkingSignature: "reasoning_content" },
+			]),
+		).toEqual({
+			reasoning: "Earlier GLM reasoning\n\nInterrupted tail",
+			strippedContent: [],
+			blockCount: 2,
+		});
+
+		expect(
+			demoteContent([
+				{ type: "thinking", thinking: "Mistral-parts reasoning", thinkingSignature: "mistral-content-parts" },
+			]),
+		).toEqual({
+			reasoning: "Mistral-parts reasoning",
+			strippedContent: [],
+			blockCount: 1,
+		});
+	});
+
+	it("keeps reasoning_details envelope blocks out of the demoted run", () => {
+		const envelope = JSON.stringify({
+			reasoningDetails: [{ type: "reasoning.text", text: "whole-turn entries" }],
+			field: "reasoning_content",
+		});
+		expect(
+			demoteContent([{ type: "thinking", thinking: "Envelope-backed reasoning", thinkingSignature: envelope }]),
+		).toBeUndefined();
+	});
 });

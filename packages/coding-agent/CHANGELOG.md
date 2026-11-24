@@ -51,6 +51,7 @@
 
 ### Fixed
 
+- Interrupting a GLM/Zhipu model mid-thinking no longer erases the interrupted reasoning from the conversation: GLM stamps streamed thinking with the wire-field marker (`thinkingSignature: "reasoning_content"`) instead of a provider signature, which made the interrupted-thinking continuity note skip the turn and the provider-context builder drop it whole. Source-marker signatures now demote like unsigned thinking, so the next prompt carries the interrupted CoT
 - Fixed context token accounting to reflect changes in system prompt sources
 - Cmd+A selects the full draft even when Tern forwards the keystroke; typing or pasting replaces the selection. Click the model name or chevron in Tern, or press Alt+P, to open the searchable `/switch` sheet without losing the draft.
 - Native composer status controls become clickable when the live session can handle them. The effort ring changes effort independently of the model name.
